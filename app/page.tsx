@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react"
 import { MessageCircle, BotMessageSquare, X, Send, Phone, Mail, MapPin, Users, Shield, Heart, FileText } from "lucide-react"
+import socket from "../lib/socket";
 
 export default function ACSWebsite() {
   const [isChatOpen, setIsChatOpen] = useState(false)
@@ -16,6 +17,10 @@ export default function ACSWebsite() {
   const [inputValue, setInputValue] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [loadingText, setLoadingText] = useState("")
+
+  const [liveAgentConnected, setLiveAgentConnected] = useState(false)
+  const userId = useRef(`user-${Date.now()}`) 
+
   const messagesEndRef = useRef(null)
 
   const scrollToBottom = () => {
@@ -26,70 +31,114 @@ export default function ACSWebsite() {
     scrollToBottom()
   }, [messages])
 
+  useEffect(() => {
+    if (!liveAgentConnected) return;
+
+    socket.emit("start-chat", userId.current)
+
+    socket.on("receive-message", ({ sender = "agent", message }) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          text: message,
+          sender,
+          timestamp: new Date(),
+        },
+      ])
+    })
+
+    return () => {
+      socket.off("receive-message")
+    }
+  }, [liveAgentConnected])
+
+
   const handleSendMessage = async (e) => {
-    e.preventDefault()
+  e.preventDefault()
+  if (!inputValue.trim() || isTyping) return
 
-    if (!inputValue.trim() || isTyping) return
+  const userMessage = {
+    id: Date.now(),
+    text: inputValue.trim(),
+    sender: "user",
+    timestamp: new Date(),
+  }
 
-    const userMessage = {
-      id: Date.now(),
-      text: inputValue.trim(),
-      sender: "user",
+  setMessages((prev) => [...prev, userMessage])
+  setInputValue("")
+
+  const lowerInput = inputValue.trim().toLowerCase()
+  const triggerPhrases = ["live agent", "real person", "talk to human", "talk to agent", "human", "representative"]
+
+  if (liveAgentConnected) {
+    socket.emit("user-message", { userId: userId.current, message: inputValue })
+    return
+  }
+
+  if (triggerPhrases.some((phrase) => lowerInput.includes(phrase))) {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now(),
+        text: "Connected to a live agent...",
+        sender: "bot",
+        timestamp: new Date(),
+      },
+    ])
+    setLiveAgentConnected(true)
+    return
+  }
+
+  setIsTyping(true)
+
+  const loadingStates = [
+    "Processing your question...",
+    "Analyzing your request...",
+    "Fetching relevant information...",
+    "Preparing response...",
+  ]
+
+  let currentStateIndex = 0
+  const loadingInterval = setInterval(() => {
+    setLoadingText(loadingStates[currentStateIndex])
+    currentStateIndex = (currentStateIndex + 1) % loadingStates.length
+  }, 1000)
+
+  try {
+    const response = await fetch("http://127.0.0.1:8000/api/faq", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: userMessage.text }),
+    })
+
+    const data = await response.json()
+
+    const botMessage = {
+      id: Date.now() + 1,
+      text: data.answer || "I apologize, I couldn't find a specific answer. Please contact support directly.",
+      sender: "bot",
       timestamp: new Date(),
     }
 
-    setMessages((prev) => [...prev, userMessage])
-    setInputValue("")
-    setIsTyping(true)
-
-    // Loading text progression
-    const loadingStates = [
-      "Processing your question...",
-      "Analyzing your request...",
-      "Fetching relevant information...",
-      "Preparing response..."
-    ]
-
-    let currentStateIndex = 0
-    const loadingInterval = setInterval(() => {
-      setLoadingText(loadingStates[currentStateIndex])
-      currentStateIndex = (currentStateIndex + 1) % loadingStates.length
-    }, 1000)
-
-    try {
-      const response = await fetch("http://127.0.0.1:8000/api/faq", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ question: userMessage.text }),
-      })
-
-      const data = await response.json()
-
-      const botMessage = {
-        id: Date.now() + 1,
-        text: data.answer || "I apologize, but I couldn't find a specific answer to your question. Please feel free to contact our support team directly for personalized assistance.",
-        sender: "bot",
-        timestamp: new Date(),
-      }
-
-      setMessages((prev) => [...prev, botMessage])
-    } catch (error) {
-      const errorMessage = {
-        id: Date.now() + 1,
-        text: "I'm temporarily unable to process your request. Please try again in a moment, or contact our support team directly at 1-800-342-3720.",
-        sender: "bot",
-        timestamp: new Date(),
-      }
-
-      setMessages((prev) => [...prev, errorMessage])
-    } finally {
-      clearInterval(loadingInterval)
-      setIsTyping(false)
-      setLoadingText("")
+    setMessages((prev) => [...prev, botMessage])
+  } catch (error) {
+    const errorMessage = {
+      id: Date.now() + 1,
+      text: "I'm temporarily unable to process your request. Please try again later.",
+      sender: "bot",
+      timestamp: new Date(),
     }
+
+    setMessages((prev) => [...prev, errorMessage])
+  } finally {
+    clearInterval(loadingInterval)
+    setIsTyping(false)
+    setLoadingText("")
   }
+}
+
+
 
   const handleKeyPress = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -395,6 +444,31 @@ export default function ACSWebsite() {
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {/* {!liveAgentConnected && (
+              <div className="px-4 py-2 text-center">
+                <button
+                  onClick={() => {
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: Date.now(),
+                        text: "Connecting you to a live agent...",
+                        sender: "bot",
+                        timestamp: new Date(),
+                      },
+                    ])
+                    setLiveAgentConnected(true)
+                  }}
+                  className="bg-slate-700 text-white px-4 py-2 rounded hover:bg-slate-600 text-sm"
+                >
+                  Connect to Live Agent
+                </button>
+              </div>
+            )} */}
+
+
+
 
             {/* Chat Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
